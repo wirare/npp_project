@@ -1,10 +1,10 @@
+#include "filter.hpp"
 #include <npp.h>
 #include <nppi.h>
 #include <memory.hpp>
 #include <global.hpp>
 #include <iostream>
 
-#define CASE_INDEX(t, i) case(MEM_##t): index = i; break
 static std::vector<buffers_t> g_buffers;
 
 void resize_buffer(void **buffer, Npp32s *step, int w, int h)
@@ -69,6 +69,21 @@ int initBuffers()
 	return 0;
 }
 
+static std::string getErrorStr(bufferType_t bufferType, memoryVisibility_t visibility, bool idx_err)
+{
+	std::string err("Error in buffer initialisation: ");
+	if (idx_err)
+		err += "Buffer index wrong for buffer of type " + bufferTypeToString(bufferType) + " with visibility MEM_PUBLIC\n";
+	else
+	{
+		if (visibility == MEM_PRIVATE)
+			err += "No MEM_PRIVATE buffer of type " + bufferTypeToString(bufferType) + " available\n";
+		else
+			err += "No MEM_PUBLIC buffer of type " + bufferTypeToString(bufferType) + " exist\n";
+	}
+	return err;
+}
+
 int getBuffer(bufferType_t bufferType, memoryVisibility_t visibility, int buf_idx, void **dest, Npp32s *step)
 {
 	if (visibility == MEM_PRIVATE)
@@ -83,7 +98,7 @@ int getBuffer(bufferType_t bufferType, memoryVisibility_t visibility, int buf_id
 				return 0;
 			}
 		}
-		std::cerr << "Couldnt manage to get buffer for MEM_PRIVATE\n";
+		std::cerr << getErrorStr(bufferType, visibility, false);
 		return 1;
 	}
 
@@ -93,7 +108,7 @@ int getBuffer(bufferType_t bufferType, memoryVisibility_t visibility, int buf_id
 		{
 			if (buf_idx < 0 && buf_idx >= (int)buffer.buffers.size())
 			{
-				std::cerr << "Buffer index retreiving is wrong\n";
+				std::cerr << getErrorStr(bufferType, visibility, true);
 				return 1;
 			}
 
@@ -102,6 +117,18 @@ int getBuffer(bufferType_t bufferType, memoryVisibility_t visibility, int buf_id
 			return 0;
 		}
 	}
-	std::cerr << "Couldnt manage to get buffer for MEM_PUBLIC\n";
+	std::cerr << getErrorStr(bufferType, visibility, false);
 	return 1;
+}
+
+bool initFilterBuffers()
+{
+	bool ret = false;
+	for (auto& filter : processing_functions)
+	{
+		ret |= filter.fn((Npp8u*)NULL, 0, true);
+		if (ret)
+			std::cerr << filter.name << "\n";
+	}
+	return ret;
 }

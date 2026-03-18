@@ -3,8 +3,8 @@
 #include <npp.h>
 #include <vector>
 
-#define DEF_FILTER_FN(name) void do_##name##_on_image(Npp8u *in, int inStep)
-#define FILTER_FN_NAME(name) (image_processing_struct){do_##name##_on_image, "Current filter : "#name}
+#define DEF_FILTER_FN(name) bool do_##name##_on_image(Npp8u *in, int inStep, bool init)
+#define FILTER_FN_NAME(name) (image_processing_struct){do_##name##_on_image, #name}
 
 DEF_FILTER_FN(SobelV);
 DEF_FILTER_FN(SobelH);
@@ -15,14 +15,20 @@ DEF_FILTER_FN(PrewittHoriz);
 DEF_FILTER_FN(PrewittVert);
 DEF_FILTER_FN(PrewittFull);
 DEF_FILTER_FN(CannyBorderSobel);
+DEF_FILTER_FN(RowNormalization);
 
-typedef void(*image_processing_fn)(Npp8u *, int);
-typedef struct {image_processing_fn fn; const char *name;} image_processing_struct;
+typedef bool(*image_processing_fn)(Npp8u *, int, bool);
+typedef struct 
+{
+	image_processing_fn fn; 
+	const char *name;
+} image_processing_struct;
 
 static const std::vector<image_processing_struct> processing_functions = 
 {
 	FILTER_FN_NAME(PrewittFull),
 	FILTER_FN_NAME(SobelF),
 	FILTER_FN_NAME(CannyBorderSobel),
+	FILTER_FN_NAME(RowNormalization),
 };
 

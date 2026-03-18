@@ -10,6 +10,7 @@
 #include <EGL/egl.h>
 
 #include "cairo.h"
+#include "driver_types.h"
 #include "gst/gstpad.h"
 #include "nppdefs.h"
 #include "nvbufsurface.h"
@@ -26,6 +27,7 @@
 #include <vector>
 #include <cstring>
 #include <utility>
+#include <iostream>
 
 #include <filter.hpp>
 #include <global.hpp>
@@ -39,12 +41,12 @@ static GstAppSrc* g_proc_src = nullptr;
 static GtkWidget* g_stack = nullptr;
 static gboolean g_show_processed = FALSE;
 
-static Npp8u*	g_rgba_out = nullptr;
-static Npp32s   g_rgba_outStep = 0;
+Npp8u*	g_rgba_out = nullptr;
+Npp32s   g_rgba_outStep = 0;
 
-static NppStreamContext g_nppStreamCtx;
+NppStreamContext g_nppStreamCtx;
 
-static cudaStream_t g_stream = 0;
+cudaStream_t g_stream = 0;
 
 static std::vector<uint8_t> g_host_rgba;
 static guint64 g_proc_frame_id = 0;
@@ -55,7 +57,7 @@ static float ms = 0.0f;
 static image_processing_fn current_processing_function = processing_functions[0].fn;
 static int current_processing_fn_index = 0;
 
-static std::vector<void*> g_cuda_buf_to_free;
+std::vector<void*> g_cuda_buf_to_free;
 static bool g_input_toggle[0xffff];
 
 static gboolean on_key_press(GtkWidget*, GdkEventKey* event, gpointer)
@@ -147,270 +149,10 @@ gboolean draw_ms(GtkWidget *widget, cairo_t *cr, gpointer data)
 	cairo_move_to(cr, 20, 90);
 	cairo_show_text(cr, fps_text.c_str());
 	cairo_move_to(cr, 20, 120);
-	cairo_show_text(cr, processing_functions[current_processing_fn_index].name);
-	cairo_move_to(cr, 20, 150);
-	cairo_show_text(cr, std::to_string(g_input_toggle[GDK_KEY_w]).c_str());
+	std::string proc_fn_text("Current processing function: ");
+	proc_fn_text += processing_functions[current_processing_fn_index].name; 
+	cairo_show_text(cr, proc_fn_text.c_str());
 	return FALSE;
-}
-
-DEF_FILTER_FN(SobelV)
-{
-	static bool init = false;
-	static Npp8u*	gray = nullptr;
-	static Npp32s	grayStep = 0;
-
-	static Npp16s*	sobel16 = nullptr;
-	static Npp32s   sobel16Step = 0;
-
-	static Npp8u*	sobel8 = nullptr;
-	static Npp32s   sobel8Step = 0;
-
-	if (!init)
-	{
-		getBuffer(BUF_8u_C1, MEM_PUBLIC, 0, (void**)&gray, &grayStep);
-		getBuffer(BUF_8u_C1, MEM_PUBLIC, 1, (void**)&sobel8, &sobel8Step);
-		getBuffer(BUF_16s_C1, MEM_PUBLIC, 0, (void**)&sobel16, &sobel16Step);
-		init = true;
-	}
-
-	NppiSize roi = { g_w, g_h };
-
-	nppiRGBToGray_8u_AC4C1R_Ctx(in, inStep, gray, grayStep, roi, g_nppStreamCtx);
-
-	nppiFilterSobelVert_8u16s_C1R_Ctx(gray, grayStep, sobel16, sobel16Step, roi, NPP_MASK_SIZE_3_X_3, g_nppStreamCtx);
-
-	nppiAbs_16s_C1IR_Ctx(sobel16, sobel16Step, roi, g_nppStreamCtx);
-
-	nppiConvert_16s8u_C1R_Ctx(sobel16, sobel16Step, sobel8, sobel8Step, roi, g_nppStreamCtx);
-
-	nppiCopy_8u_C1C4R_Ctx(sobel8, sobel8Step, g_rgba_out, g_rgba_outStep, roi, g_nppStreamCtx);
-	nppiCopy_8u_C1C4R_Ctx(sobel8, sobel8Step, g_rgba_out+1, g_rgba_outStep, roi, g_nppStreamCtx);
-    nppiCopy_8u_C1C4R_Ctx(sobel8, sobel8Step, g_rgba_out+2, g_rgba_outStep, roi, g_nppStreamCtx);
-
-	nppiSet_8u_C4CR_Ctx(255, g_rgba_out + 3, g_rgba_outStep, roi, g_nppStreamCtx);
-}
-
-DEF_FILTER_FN(SobelH)
-{
-	static bool init = false;
-	static Npp8u*	gray = nullptr;
-	static Npp32s	grayStep = 0;
-
-	static Npp16s*	sobel16 = nullptr;
-	static Npp32s   sobel16Step = 0;
-
-	static Npp8u*	sobel8 = nullptr;
-	static Npp32s   sobel8Step = 0;
-
-	if (!init)
-	{
-		getBuffer(BUF_8u_C1, MEM_PUBLIC, 0, (void**)&gray, &grayStep);
-		getBuffer(BUF_8u_C1, MEM_PUBLIC, 1, (void**)&sobel8, &sobel8Step);
-		getBuffer(BUF_16s_C1, MEM_PUBLIC, 0, (void**)&sobel16, &sobel16Step);
-		init = 1;
-	}
-
-	NppiSize roi = { g_w, g_h };
-
-	nppiRGBToGray_8u_AC4C1R_Ctx(in, inStep, gray, grayStep, roi, g_nppStreamCtx);
-
-	nppiFilterSobelHoriz_8u16s_C1R_Ctx(gray, grayStep, sobel16, sobel16Step, roi, NPP_MASK_SIZE_3_X_3, g_nppStreamCtx);
-
-	nppiAbs_16s_C1IR_Ctx(sobel16, sobel16Step, roi, g_nppStreamCtx);
-
-	nppiConvert_16s8u_C1R_Ctx(sobel16, sobel16Step, sobel8, sobel8Step, roi, g_nppStreamCtx);
-
-	nppiCopy_8u_C1C4R_Ctx(sobel8, sobel8Step, g_rgba_out, g_rgba_outStep, roi, g_nppStreamCtx);
-	nppiCopy_8u_C1C4R_Ctx(sobel8, sobel8Step, g_rgba_out+1, g_rgba_outStep, roi, g_nppStreamCtx);
-    nppiCopy_8u_C1C4R_Ctx(sobel8, sobel8Step, g_rgba_out+2, g_rgba_outStep, roi, g_nppStreamCtx);
-
-	nppiSet_8u_C4CR_Ctx(255, g_rgba_out + 3, g_rgba_outStep, roi, g_nppStreamCtx);
-}
-
-DEF_FILTER_FN(SobelF)
-{
-	static bool init = false;
-	static Npp8u*	gray = nullptr;
-	static Npp32s	grayStep = 0;
-
-	static Npp16s*	sobel16x = nullptr;
-	static Npp32s   sobel16xStep = 0;
-	static Npp16s*	sobel16y = nullptr;
-	static Npp32s   sobel16yStep = 0;
-
-	static Npp8u*	sobel8 = nullptr;
-	static Npp32s   sobel8Step = 0;
-
-	if (!init)
-	{
-		getBuffer(BUF_8u_C1, MEM_PUBLIC, 0, (void**)&gray, &grayStep);
-		getBuffer(BUF_8u_C1, MEM_PUBLIC, 1, (void**)&sobel8, &sobel8Step);
-		getBuffer(BUF_16s_C1, MEM_PUBLIC, 0, (void**)&sobel16x, &sobel16xStep);
-		getBuffer(BUF_16s_C1, MEM_PUBLIC, 1, (void**)&sobel16y, &sobel16yStep);
-		init = true;
-	}
-
-	NppiSize roi = { g_w, g_h };
-
-	nppiRGBToGray_8u_AC4C1R_Ctx(in, inStep, gray, grayStep, roi, g_nppStreamCtx);
-
-	nppiFilterSobelVert_8u16s_C1R_Ctx(gray, grayStep, sobel16x, sobel16xStep, roi, NPP_MASK_SIZE_3_X_3, g_nppStreamCtx);
-	nppiFilterSobelHoriz_8u16s_C1R_Ctx(gray, grayStep, sobel16y, sobel16yStep, roi, NPP_MASK_SIZE_3_X_3, g_nppStreamCtx);
-
-	nppiAbs_16s_C1IR_Ctx(sobel16x, sobel16xStep, roi, g_nppStreamCtx);
-	nppiAbs_16s_C1IR_Ctx(sobel16y, sobel16yStep, roi, g_nppStreamCtx);
-
-	nppiAdd_16s_C1IRSfs_Ctx(sobel16y, sobel16yStep, sobel16x, sobel16xStep, roi, 0, g_nppStreamCtx);
-
-	nppiConvert_16s8u_C1R_Ctx(sobel16x, sobel16xStep, sobel8, sobel8Step, roi, g_nppStreamCtx);
-
-	nppiCopy_8u_C1C4R_Ctx(sobel8, sobel8Step, g_rgba_out, g_rgba_outStep, roi, g_nppStreamCtx);
-	nppiCopy_8u_C1C4R_Ctx(sobel8, sobel8Step, g_rgba_out+1, g_rgba_outStep, roi, g_nppStreamCtx);
-    nppiCopy_8u_C1C4R_Ctx(sobel8, sobel8Step, g_rgba_out+2, g_rgba_outStep, roi, g_nppStreamCtx);
-
-	nppiSet_8u_C4CR_Ctx(255, g_rgba_out + 3, g_rgba_outStep, roi, g_nppStreamCtx);
-}
-
-DEF_FILTER_FN(Gauss)
-{
-	NppiSize roi = {g_w, g_h};
-
-	nppiFilterGauss_8u_C4R_Ctx(in, inStep, g_rgba_out, g_rgba_outStep, roi, NPP_MASK_SIZE_3_X_3, g_nppStreamCtx);
-}
-
-DEF_FILTER_FN(Sharpen)
-{
-	NppiSize roi = {g_w, g_h};
-
-	nppiFilterSharpen_8u_C4R_Ctx(in, inStep, g_rgba_out, g_rgba_outStep, roi, g_nppStreamCtx);
-}
-
-DEF_FILTER_FN(PrewittHoriz)
-{
-	NppiSize roi = {g_w, g_h};
-
-	nppiFilterPrewittHoriz_8u_AC4R_Ctx(in, inStep, g_rgba_out, g_rgba_outStep, roi, g_nppStreamCtx);
-}
-
-DEF_FILTER_FN(PrewittVert)
-{
-	NppiSize roi = {g_w, g_h};
-
-	nppiFilterPrewittVert_8u_AC4R_Ctx(in, inStep, g_rgba_out, g_rgba_outStep, roi, g_nppStreamCtx);
-}
-
-DEF_FILTER_FN(PrewittFull)
-{
-	static bool init = false;
-
-	static Npp16s* orig_to_16s = nullptr;
-	static Npp32s orig_to_16sStep = 0;
-
-	static Npp16s* prewitt16x = nullptr;
-	static Npp32s prewitt16xStep = 0;
-
-	static Npp16s* prewitt16y = nullptr;
-	static Npp32s prewitt16yStep = 0;
-
-	if (!init)
-	{
-		getBuffer(BUF_16s_C4, MEM_PUBLIC, 0, (void **)&orig_to_16s, &orig_to_16sStep);
-		getBuffer(BUF_16s_C4, MEM_PUBLIC, 1, (void **)&prewitt16x, &prewitt16xStep);
-		getBuffer(BUF_16s_C4, MEM_PUBLIC, 2, (void **)&prewitt16y, &prewitt16yStep);
-		init = true;
-	}
-
-	NppiSize roi = {g_w, g_h};
-
-	nppiConvert_8u16s_C4R_Ctx(in, inStep, orig_to_16s, orig_to_16sStep, roi, g_nppStreamCtx);
-
-	nppiFilterPrewittHoriz_16s_AC4R_Ctx(orig_to_16s, orig_to_16sStep, prewitt16x, prewitt16xStep, roi, g_nppStreamCtx);
-	nppiFilterPrewittVert_16s_AC4R_Ctx(orig_to_16s, orig_to_16sStep, prewitt16y, prewitt16yStep, roi, g_nppStreamCtx);
-
-	nppiAbs_16s_AC4IR_Ctx(prewitt16x, prewitt16xStep, roi, g_nppStreamCtx);
-	nppiAbs_16s_AC4IR_Ctx(prewitt16y, prewitt16yStep, roi, g_nppStreamCtx);
-	nppiAdd_16s_AC4IRSfs_Ctx(prewitt16x, prewitt16xStep, prewitt16y, prewitt16yStep, roi, 0, g_nppStreamCtx);
-
-	nppiConvert_16s8u_AC4R_Ctx(prewitt16y, prewitt16yStep, g_rgba_out, g_rgba_outStep, roi, g_nppStreamCtx);
-	nppiSet_8u_C4CR_Ctx(255, g_rgba_out + 3, g_rgba_outStep, roi, g_nppStreamCtx);
-}
-
-DEF_FILTER_FN(CannyBorderSobel)
-{
-	static bool init = false;
-
-	static Npp8u* firstBuff = nullptr;
-	static Npp32s firstBuffStep = 0;
-
-	static Npp8u* secondBuff = nullptr;
-	static Npp32s secondBuffStep = 0;
-
-	static Npp8u* cannyBuffer = nullptr;
-	static Npp8u* medianBuffer = nullptr;
-
-	static NppiSize medianMask = {3, 3};
-	static NppiPoint medianAnchor = {1, 1};
-
-	NppiSize roi = {g_w, g_h};
-
-	if (!init)
-	{
-		getBuffer(BUF_8u_C1, MEM_PUBLIC, 0, (void**)&firstBuff, &firstBuffStep);
-		getBuffer(BUF_8u_C1, MEM_PUBLIC, 1, (void**)&secondBuff, &secondBuffStep);
-
-		int cannyBufferSize = 0;
-		nppiFilterCannyBorderGetBufferSize(roi, &cannyBufferSize);
-		cudaMalloc(&cannyBuffer, cannyBufferSize);
-		g_cuda_buf_to_free.push_back(static_cast<void*>(cannyBuffer));
-	
-		unsigned int medianBufferSize = 0;
-		nppiFilterMedianGetBufferSize_8u_C1R_Ctx(roi, medianMask, &medianBufferSize, g_nppStreamCtx);
-		cudaMalloc(&medianBuffer, medianBufferSize);
-		g_cuda_buf_to_free.push_back(static_cast<void*>(medianBuffer));
-
-		init = true;
-	}
-
-	NppiSize buffSize = {g_w, g_h};
-	NppiPoint offset = {0, 0};
-
-	nppiRGBToGray_8u_AC4C1R_Ctx(in, inStep, firstBuff, firstBuffStep, roi, g_nppStreamCtx);
-
-	nppiFilterMedian_8u_C1R_Ctx(
-			firstBuff,
-			firstBuffStep,
-			secondBuff,
-			secondBuffStep,
-			roi,
-			medianMask,
-			medianAnchor,
-			medianBuffer,
-			g_nppStreamCtx);
-
-	nppiFilterGauss_8u_C1R_Ctx(secondBuff, secondBuffStep, firstBuff, firstBuffStep, roi, NPP_MASK_SIZE_5_X_5, g_nppStreamCtx);
-
-	nppiFilterCannyBorder_8u_C1R_Ctx(
-			firstBuff, 
-			firstBuffStep, 
-			buffSize, 
-			offset, 
-			secondBuff, 
-			secondBuffStep, 
-			roi, 
-			NPP_FILTER_SOBEL, 
-			NPP_MASK_SIZE_3_X_3,
-			20,
-			50,
-			nppiNormL2, 
-			NPP_BORDER_REPLICATE, 
-			cannyBuffer,
-			g_nppStreamCtx);
-	
-	nppiCopy_8u_C1C4R_Ctx(secondBuff, secondBuffStep, g_rgba_out, g_rgba_outStep, roi, g_nppStreamCtx);
-	nppiCopy_8u_C1C4R_Ctx(secondBuff, secondBuffStep, g_rgba_out+1, g_rgba_outStep, roi, g_nppStreamCtx);
-    nppiCopy_8u_C1C4R_Ctx(secondBuff, secondBuffStep, g_rgba_out+2, g_rgba_outStep, roi, g_nppStreamCtx);
-
-	nppiSet_8u_C4CR_Ctx(255, g_rgba_out + 3, g_rgba_outStep, roi, g_nppStreamCtx);
 }
 
 static GstFlowReturn on_new_sample(GstAppSink* appsink, gpointer)
@@ -421,89 +163,92 @@ static GstFlowReturn on_new_sample(GstAppSink* appsink, gpointer)
 		cudaEventCreate(&evStop);
 	}
 
+	static bool init = false;
+
     GstSample* sample = nullptr;
     GstBuffer* buffer = nullptr;
     GstMapInfo map;
     memset(&map, 0, sizeof(map));
     NvBufSurface* surf = nullptr;
 
-    EGLImageKHR eglImage = nullptr;
+	EGLImageKHR eglImage = nullptr;
 
-    cudaGraphicsResource_t cudaResource = nullptr;
-    cudaEglFrame eglFrame;
-    cudaPitchedPtr pp;
-    Npp8u* d_in = nullptr;
-    int step = 0;
+	cudaGraphicsResource_t cudaResource = nullptr;
+	cudaEglFrame eglFrame;
+	cudaPitchedPtr pp;
+	Npp8u* d_in = nullptr;
+	int step = 0;
 
-    bool gst_mapped = false;
-    bool egl_mapped = false;
-    bool cuda_registered = false;
+	bool gst_mapped = false;
+	bool egl_mapped = false;
+	bool cuda_registered = false;
 
-    cudaError_t ce = cudaSuccess;
+	cudaError_t ce = cudaSuccess;
 
-    static int counter = 0;
-    counter++;
+	static int counter = 0;
+	counter++;
 
 	bool doProfile = ((counter % 30) == 0);
 
 	if (doProfile && g_rgba_out)
 		cudaEventRecord(evStart, g_stream);
 
-    sample = gst_app_sink_pull_sample(appsink);
-    if (!sample)
-        goto cleanup;
-
-    buffer = gst_sample_get_buffer(sample);
-    if (!buffer)
-        goto cleanup;
-
-    if (!gst_buffer_map(buffer, &map, GST_MAP_READ))
-        goto cleanup;
-
-    gst_mapped = true;
-
-    surf = (NvBufSurface*)map.data;
-    if (!surf)
+	sample = gst_app_sink_pull_sample(appsink);
+	if (!sample)
 		goto cleanup;
 
-	if (!g_rgba_out)
+	buffer = gst_sample_get_buffer(sample);
+	if (!buffer)
+		goto cleanup;
+
+	if (!gst_buffer_map(buffer, &map, GST_MAP_READ))
+		goto cleanup;
+
+	gst_mapped = true;
+
+	surf = (NvBufSurface*)map.data;
+	if (!surf)
+		goto cleanup;
+
+	cudaSetDevice(0);
+	cudaFree(0);
+	nppSetStream(g_stream);
+
+	if (!init)
 	{
-		cudaSetDevice(0);
-		cudaFree(0);
-		nppSetStream(g_stream);
 		nppGetStreamContext(&g_nppStreamCtx);
 
-		getBuffer(BUF_8u_C4, MEM_PRIVATE, 0, (void **)&g_rgba_out, &g_rgba_outStep);
 		g_host_rgba.resize((size_t)g_w * (size_t)g_h * 4);
+		init = true;
 	}
 
-    if (NvBufSurfaceMapEglImage(surf, 0) != 0)
-        goto cleanup;
+	if (NvBufSurfaceMapEglImage(surf, 0) != 0)
+		goto cleanup;
 
-    egl_mapped = true;
+	egl_mapped = true;
 
-    eglImage = (EGLImageKHR)surf->surfaceList[0].mappedAddr.eglImage;
-    if (!eglImage)
-        goto cleanup;
+	eglImage = (EGLImageKHR)surf->surfaceList[0].mappedAddr.eglImage;
+	if (!eglImage)
+		goto cleanup;
 
-    ce = cudaGraphicsEGLRegisterImage(&cudaResource, eglImage, cudaGraphicsRegisterFlagsReadOnly);
-    if (ce != cudaSuccess)
-        goto cleanup;
+	ce = cudaGraphicsEGLRegisterImage(&cudaResource, eglImage, cudaGraphicsRegisterFlagsReadOnly);
+	if (ce != cudaSuccess)
+		goto cleanup;
 
-    cuda_registered = true;
+	cuda_registered = true;
 
-    ce = cudaGraphicsResourceGetMappedEglFrame(&eglFrame, cudaResource, 0, 0);
-    if (ce != cudaSuccess)
-        goto cleanup;
+	ce = cudaGraphicsResourceGetMappedEglFrame(&eglFrame, cudaResource, 0, 0);
+	if (ce != cudaSuccess)
+		goto cleanup;
 
-    if (eglFrame.frameType != cudaEglFrameTypePitch)
-        goto cleanup;
+	if (eglFrame.frameType != cudaEglFrameTypePitch)
+		goto cleanup;
 
     pp = eglFrame.frame.pPitch[0];
     d_in = (Npp8u*)pp.ptr;
     step = (int)pp.pitch;
 
-	current_processing_function(d_in, step);
+	current_processing_function(d_in, step, false);
 	nppiMirror_8u_C4IR_Ctx(g_rgba_out, g_rgba_outStep, (NppiSize){g_w, g_h}, NPP_BOTH_AXIS, g_nppStreamCtx);
 	{
         size_t rowBytes = (size_t)g_w * 4;
@@ -574,6 +319,18 @@ static GstElement* build_pipeline_proc(int width, int height)
 
 int main(int argc, char** argv)
 {
+	initBuffers();
+	bool ret = initFilterBuffers();
+	ret |= getBuffer(BUF_8u_C4, MEM_PRIVATE, 0, (void **)&g_rgba_out, &g_rgba_outStep);
+	if (ret)
+	{
+		freeBuffers();
+		for (auto &buf : g_cuda_buf_to_free)
+			cudaFree(buf);
+		std::cerr << "Error while buffer allocation, abbort\n";
+		return 1;
+	}
+
     gst_init(&argc, &argv);
     gtk_init(&argc, &argv);
 
@@ -646,9 +403,7 @@ int main(int argc, char** argv)
     gst_element_set_state(g_pipeline_proc, GST_STATE_PLAYING);
     gst_element_set_state(g_pipeline_capture, GST_STATE_PLAYING);
 
-	initBuffers();
-
-    gtk_main();
+	gtk_main();
 
 	if (g_proc_src)
 		gst_app_src_end_of_stream(g_proc_src);

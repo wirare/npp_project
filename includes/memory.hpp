@@ -4,6 +4,8 @@
 #include <utility>
 #include <vector>
 #include <npp.h>
+#include <string>
+#include <iostream>
 
 typedef enum
 {
@@ -11,6 +13,7 @@ typedef enum
 	BUF_8u_C4,
 	BUF_16s_C1,
 	BUF_16s_C4,
+	BUF_32f_C1,
 	BUF_END,
 }	bufferType_t;
 
@@ -29,6 +32,7 @@ const std::array<buff_malloc_fn, BUF_END+1> bufTypeToMallocMapping =
 	BUF_TO_MALLOC(8u_C4),
 	BUF_TO_MALLOC(16s_C1),
 	BUF_TO_MALLOC(16s_C4),
+	BUF_TO_MALLOC(32f_C1),
 	nullptr,
 };
 
@@ -60,6 +64,36 @@ typedef struct
 	std::vector<Npp32s> steps;
 }	buffers_t;
 
+#define CASE_T_TO_STR(t) case t: return std::string(#t)
+
+static std::string bufferTypeToString(bufferType_t t)
+{
+	switch (t)
+	{
+		CASE_T_TO_STR(BUF_8u_C1);
+		CASE_T_TO_STR(BUF_8u_C4);
+		CASE_T_TO_STR(BUF_16s_C1);
+		CASE_T_TO_STR(BUF_16s_C4);
+		CASE_T_TO_STR(BUF_32f_C1);
+		case BUF_END: 
+		{
+			std::cerr << "BUF_END Should never be used for a buffer\n";
+			return std::string("BUF_END");
+		}
+	}
+	__builtin_unreachable();
+}
+
+static std::string memoryVisibilityToString(memoryVisibility_t t)
+{
+	switch (t)
+	{
+		case MEM_PUBLIC: return std::string("MEM_PUBLIC");
+		case MEM_PRIVATE: return std::string("MEM_PRIVATE");
+	}
+	__builtin_unreachable();
+}
+
 #define REQUEST(t, s, n) (bufferRequest){n, t, s}
 
 const std::vector<bufferRequest> bufferAtInit =	
@@ -68,8 +102,10 @@ const std::vector<bufferRequest> bufferAtInit =
 	REQUEST(BUF_8u_C1, STATUS_PUBLIC, 2),
 	REQUEST(BUF_16s_C1, STATUS_PUBLIC, 2),
 	REQUEST(BUF_16s_C4, STATUS_PUBLIC, 3),
+	REQUEST(BUF_32f_C1, STATUS_PUBLIC, 1),
 };
 
 int getBuffer(bufferType_t bufferType, memoryVisibility_t visibility, int buf_idx, void **dest, Npp32s *step);
 int initBuffers();
 void freeBuffers();
+bool initFilterBuffers();
