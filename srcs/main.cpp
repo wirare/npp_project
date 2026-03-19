@@ -9,7 +9,6 @@
 #include <cuda_egl_interop.h>
 #include <EGL/egl.h>
 
-#include "cairo.h"
 #include "driver_types.h"
 #include "gst/gstpad.h"
 #include "nppdefs.h"
@@ -17,11 +16,6 @@
 
 #include <npp.h>
 #include <nppi.h>
-
-#include <nppi_filtering_functions.h>
-#include <nppi_arithmetic_and_logical_operations.h>
-#include <nppi_data_exchange_and_initialization.h>
-#include <nppi_color_conversion.h>
 
 #include <string>
 #include <vector>
@@ -32,72 +26,8 @@
 #include <filter.hpp>
 #include <global.hpp>
 #include <memory.hpp>
-
-static GstElement* g_pipeline_capture = nullptr;
-static GstElement* g_pipeline_proc = nullptr;
-
-static GstAppSrc* g_proc_src = nullptr;
-
-static GtkWidget* g_stack = nullptr;
-static gboolean g_show_processed = FALSE;
-
-Npp8u*	g_rgba_out = nullptr;
-Npp32s   g_rgba_outStep = 0;
-
-NppStreamContext g_nppStreamCtx;
-
-cudaStream_t g_stream = 0;
-
-static std::vector<uint8_t> g_host_rgba;
-static guint64 g_proc_frame_id = 0;
-
-static cudaEvent_t evStart = nullptr, evStop = nullptr;
-static float ms = 0.0f;
-
-static image_processing_fn current_processing_function = processing_functions[0].fn;
-static int current_processing_fn_index = 0;
-
-std::vector<void*> g_cuda_buf_to_free;
-static bool g_input_toggle[0xffff];
-
-static gboolean on_key_press(GtkWidget*, GdkEventKey* event, gpointer)
-{
-	g_input_toggle[event->keyval] = 1;
-	switch (event->keyval)
-	{
-		case GDK_KEY_space:
-			{
-				g_show_processed = !g_show_processed;
-				gtk_stack_set_visible_child_name(GTK_STACK(g_stack), g_show_processed ? "proc" : "raw");
-				return TRUE;
-			}
-		case GDK_KEY_Right:
-			{
-				current_processing_fn_index++;
-				if (current_processing_fn_index % processing_functions.size() == 0)
-					current_processing_fn_index = 0;
-				current_processing_function = processing_functions[current_processing_fn_index].fn;
-				return TRUE;
-			}
-		case GDK_KEY_Left:
-			{
-				current_processing_fn_index--;
-				if (current_processing_fn_index == -1)
-					current_processing_fn_index = processing_functions.size()-1;
-				current_processing_function = processing_functions[current_processing_fn_index].fn;
-				return TRUE;
-			}
-		case GDK_KEY_Escape:
-				gtk_main_quit();
-	}
-	return FALSE;
-}
-
-static gboolean on_key_release(GtkWidget*, GdkEventKey *event, gpointer)
-{
-	g_input_toggle[event->keyval] = 0;
-	return FALSE;
-}
+#include <gtk_implementation.hpp>
+#include <build_pipeline.hpp>
 
 static void push_processed_rgba_to_appsrc(const uint8_t* data, size_t size, int fps)
 {
@@ -132,27 +62,6 @@ static void push_processed_rgba_to_appsrc(const uint8_t* data, size_t size, int 
     GstFlowReturn fr = gst_app_src_push_buffer(g_proc_src, out);
     if (fr != GST_FLOW_OK)
         return;
-}
-
-gboolean draw_ms(GtkWidget *widget, cairo_t *cr, gpointer data)
-{
-	(void)data;
-	(void)widget;
-	cairo_set_source_rgb(cr, 1, 1, 1);
-	cairo_set_font_size(cr, 24);
-	cairo_move_to(cr, 20, 60);
-	std::string ms_text("ms/f: ");
-	ms_text += std::to_string(ms);
-	cairo_show_text(cr, ms_text.c_str());
-	std::string fps_text("fps: ");
-	fps_text += std::to_string(1000/ms);
-	cairo_move_to(cr, 20, 90);
-	cairo_show_text(cr, fps_text.c_str());
-	cairo_move_to(cr, 20, 120);
-	std::string proc_fn_text("Current processing function: ");
-	proc_fn_text += processing_functions[current_processing_fn_index].name; 
-	cairo_show_text(cr, proc_fn_text.c_str());
-	return FALSE;
 }
 
 static GstFlowReturn on_new_sample(GstAppSink* appsink, gpointer)
@@ -275,48 +184,6 @@ cleanup:
     return GST_FLOW_OK;
 }
 
-static GstElement* build_pipeline_capture(int width, int height)
-{
-	std::string pipe =
-		"nvarguscamerasrc ! " 
-		"video/x-raw(memory:NVMM),width=" + std::to_string(width) + ",height=" + std::to_string(height) + ",framerate=30/1,format=NV12 ! " 
-		"tee name=t " 
-		"t. ! queue ! nvvidconv ! gtksink name=raw_sink sync=false " 
-		"t. ! queue leaky=downstream max-size-buffers=1 ! " 
-		"nvvidconv ! video/x-raw(memory:NVMM),format=RGBA ! " 
-		"appsink name=proc_sink emit-signals=true max-buffers=1 drop=true sync=false";
-
-    GError* err = nullptr;
-    GstElement* pipeline = gst_parse_launch(pipe.c_str(), &err);
-	if (err)
-	{
-		g_printerr("gst_parse_launch capture failed: %s\n", err->message);
-		g_error_free(err);
-		return nullptr;
-	}
-    return pipeline;
-}
-
-static GstElement* build_pipeline_proc(int width, int height)
-{
-    std::string pipe =
-        "appsrc name=proc_src is-live=true do-timestamp=false format=time block=false ! "
-        "video/x-raw,format=RGBA,width=" + std::to_string(width) + ",height=" + std::to_string(height) + ",framerate=30/1 ! "
-        "queue ! "
-		"videoconvert ! "
-        "gtksink name=proc_sink sync=false";
-
-    GError* err = nullptr;
-    GstElement* pipeline = gst_parse_launch(pipe.c_str(), &err);
-	if (err)
-	{
-		g_printerr("gst_parse_launch proc failed: %s\n", err->message);
-		g_error_free(err);
-		return nullptr;
-	}
-    return pipeline;
-}
-
 int main(int argc, char** argv)
 {
 	initBuffers();
@@ -395,7 +262,7 @@ int main(int argc, char** argv)
     g_signal_connect(window, "destroy", G_CALLBACK(gtk_main_quit), nullptr);
     g_signal_connect(window, "key-press-event", G_CALLBACK(on_key_press), nullptr);
 	g_signal_connect(window, "key-release-event", G_CALLBACK(on_key_release), nullptr);
-	g_signal_connect_after(window, "draw", G_CALLBACK(draw_ms), nullptr);
+	g_signal_connect_after(window, "draw", G_CALLBACK(draw_info), nullptr);
 
     gtk_container_add(GTK_CONTAINER(window), g_stack);
     gtk_widget_show_all(window);
