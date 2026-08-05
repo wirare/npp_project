@@ -5,4 +5,4 @@
 
 gboolean on_key_press(GtkWidget*, GdkEventKey* event, gpointer);
 gboolean on_key_release(GtkWidget*, GdkEventKey* event, gpointer);
-gboolean draw_info(GtkWidget*, GdkEventKey* event, gpointer);
+gboolean draw_info(GtkWidget*, cairo_t* cr, gpointer);

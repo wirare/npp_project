@@ -1,4 +1,6 @@
 #include <gtk_implementation.hpp>
+#include <global.hpp>
+#include <string>
 
 gboolean on_key_press(GtkWidget*, GdkEventKey* event, gpointer)
 {

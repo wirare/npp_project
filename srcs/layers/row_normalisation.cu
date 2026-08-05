@@ -2,7 +2,7 @@
 #include <npp.h>
 #include <filter.hpp>
 #include <memory.hpp>
-#include <global.hpp>
+#include <cuda_global.hpp>
 
 static __global__ void compute_row_scales_kernel(
     const Npp32f* src,

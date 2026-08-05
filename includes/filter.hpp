@@ -31,4 +31,3 @@ static const std::vector<image_processing_struct> processing_functions =
 	FILTER_FN_NAME(CannyBorderSobel),
 	FILTER_FN_NAME(RowNormalization),
 };
-
