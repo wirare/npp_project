@@ -6,6 +6,7 @@
 #define DEF_FILTER_FN(name) bool do_##name##_on_image(Npp8u *in, int inStep, bool init)
 #define FILTER_FN_NAME(name) (image_processing_struct){do_##name##_on_image, #name}
 
+DEF_FILTER_FN(Empty);
 DEF_FILTER_FN(SobelV);
 DEF_FILTER_FN(SobelH);
 DEF_FILTER_FN(SobelF);
@@ -30,4 +31,5 @@ static const std::vector<image_processing_struct> processing_functions =
 	FILTER_FN_NAME(SobelF),
 	FILTER_FN_NAME(CannyBorderSobel),
 	FILTER_FN_NAME(RowNormalization),
+	FILTER_FN_NAME(Empty),
 };
