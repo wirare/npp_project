@@ -25,4 +25,6 @@ float ms = 0.0f;
 image_processing_fn current_processing_function = processing_functions[0].fn;
 int current_processing_fn_index = 0;
 
-bool g_input_toggle[0xffff];
+std::atomic_uint64_t g_event_sequence{0};
+
+bool g_trigger_record = false;

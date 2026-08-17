@@ -5,6 +5,7 @@
 #include "gst/app/gstappsrc.h"
 #include "gst/gstelement.h"
 #include "gtk/gtk.h"
+#include <atomic>
 #include <cstdint>
 #include <vector>
 #include "cuda_global.hpp"
@@ -22,4 +23,5 @@ extern guint64 g_proc_frame_id;
 extern image_processing_fn current_processing_function;
 extern int current_processing_fn_index;
 
-extern bool g_input_toggle[0xffff];
+extern std::atomic_uint64_t g_event_sequence;
+extern bool g_trigger_record;

@@ -4,7 +4,6 @@
 
 gboolean on_key_press(GtkWidget*, GdkEventKey* event, gpointer)
 {
-	g_input_toggle[event->keyval] = 1;
 	switch (event->keyval)
 	{
 		case GDK_KEY_space:
@@ -31,13 +30,17 @@ gboolean on_key_press(GtkWidget*, GdkEventKey* event, gpointer)
 			}
 		case GDK_KEY_Escape:
 				gtk_main_quit();
+				return TRUE;
+		case GDK_KEY_r:
+				g_trigger_record = true;
+				return TRUE;
 	}
 	return FALSE;
 }
 
 gboolean on_key_release(GtkWidget*, GdkEventKey *event, gpointer)
 {
-	g_input_toggle[event->keyval] = 0;
+	(void)event;
 	return FALSE;
 }
 

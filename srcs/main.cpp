@@ -1,3 +1,4 @@
+#include <cstdio>
 #include <gst/gst.h>
 #include <gst/app/gstappsink.h>
 #include <gst/app/gstappsrc.h>
@@ -10,9 +11,11 @@
 #include <EGL/egl.h>
 
 #include "driver_types.h"
+#include "gst/gstclock.h"
 #include "gst/gstpad.h"
 #include "nppdefs.h"
 #include "nvbufsurface.h"
+#include "video_recording.hpp"
 
 #include <npp.h>
 #include <nppi.h>
@@ -29,43 +32,99 @@
 #include <gtk_implementation.hpp>
 #include <build_pipeline.hpp>
 
-static void push_processed_rgba_to_appsrc(const uint8_t* data, size_t size, int fps)
+static GstClockTime g_first_capture_pts = GST_CLOCK_TIME_NONE;
+static GstClockTime g_last_proc_pts     = GST_CLOCK_TIME_NONE;
+
+static bool push_processed_rgba_to_appsrc(const uint8_t* data, size_t size, GstClockTime capture_pts, GstClockTime capture_duration, int fps, GstClockTime *pushed_pts)
 {
-    if (!g_proc_src)
-        return;
+    if (!g_proc_src || !data || size == 0 || fps <= 0)
+        return false;
 
     GstBuffer* out = gst_buffer_new_allocate(nullptr, size, nullptr);
+
     if (!out)
-        return;
+        return false;
 
-    GstMapInfo m;
-    memset(&m, 0, sizeof(m));
+    GstMapInfo map = GST_MAP_INFO_INIT;
 
-    if (!gst_buffer_map(out, &m, GST_MAP_WRITE))
+    if (!gst_buffer_map(out, &map, GST_MAP_WRITE))
     {
         gst_buffer_unref(out);
-        return;
+        return false;
     }
 
-    memcpy(m.data, data, size);
-    gst_buffer_unmap(out, &m);
+    memcpy(map.data, data, size);
+    gst_buffer_unmap(out, &map);
 
-    GstClockTime pts = gst_util_uint64_scale(g_proc_frame_id, GST_SECOND, (guint64)fps);
-    GstClockTime dur = gst_util_uint64_scale(1, GST_SECOND, (guint64)fps);
+    const GstClockTime fallback_duration = gst_util_uint64_scale(1, GST_SECOND, static_cast<guint64>(fps));
+    GstClockTime output_pts;
 
-    GST_BUFFER_PTS(out) = pts;
-    GST_BUFFER_DTS(out) = pts;
-    GST_BUFFER_DURATION(out) = dur;
+    if (GST_CLOCK_TIME_IS_VALID(capture_pts))
+    {
+        if (!GST_CLOCK_TIME_IS_VALID(g_first_capture_pts))
+            g_first_capture_pts = capture_pts;
 
-    g_proc_frame_id++;
+        if (capture_pts < g_first_capture_pts)
+        {
+            g_printerr("Invalid capture PTS ordering\n");
+            gst_buffer_unref(out);
+            return false;
+        }
 
-    GstFlowReturn fr = gst_app_src_push_buffer(g_proc_src, out);
-    if (fr != GST_FLOW_OK)
-        return;
+        output_pts = capture_pts - g_first_capture_pts;
+    }
+    else
+        output_pts = gst_util_uint64_scale(g_proc_frame_id, GST_SECOND, static_cast<guint64>(fps));
+
+    GstClockTime output_duration = GST_CLOCK_TIME_IS_VALID(capture_duration) ? capture_duration : fallback_duration;
+
+    if (GST_CLOCK_TIME_IS_VALID(g_last_proc_pts) && output_pts <= g_last_proc_pts)
+    {
+        g_printerr(
+            "Non-monotonic processed PTS: "
+            "previous=%" GST_TIME_FORMAT
+            ", current=%" GST_TIME_FORMAT "\n",
+            GST_TIME_ARGS(g_last_proc_pts),
+            GST_TIME_ARGS(output_pts));
+
+        gst_buffer_unref(out);
+        return false;
+    }
+
+    GST_BUFFER_PTS(out) = output_pts;
+
+    GST_BUFFER_DTS(out) = GST_CLOCK_TIME_NONE;
+
+    GST_BUFFER_DURATION(out) = output_duration;
+
+	if (pushed_pts)
+		*pushed_pts = output_pts;
+
+    GST_BUFFER_OFFSET(out) = g_proc_frame_id;
+    GST_BUFFER_OFFSET_END(out) = g_proc_frame_id + 1;
+
+    const GstFlowReturn flow = gst_app_src_push_buffer(g_proc_src, out);
+
+    if (flow != GST_FLOW_OK)
+    {
+        g_printerr(
+            "Failed to push processed buffer: %s\n",
+            gst_flow_get_name(flow));
+
+        return false;
+    }
+
+    g_last_proc_pts = output_pts;
+    ++g_proc_frame_id;
+
+    return true;
 }
 
 static GstFlowReturn on_new_sample(GstAppSink* appsink, gpointer)
 {
+	if (!g_show_processed)
+		return GST_FLOW_OK;
+
 	if (evStart == nullptr)
 	{
 		cudaEventCreate(&evStart);
@@ -99,6 +158,9 @@ static GstFlowReturn on_new_sample(GstAppSink* appsink, gpointer)
 
 	bool doProfile = ((counter % 30) == 0);
 
+	GstClockTime capture_pts = GST_CLOCK_TIME_NONE;
+	GstClockTime capture_duration = GST_CLOCK_TIME_NONE;
+
 	if (doProfile && g_rgba_out)
 		cudaEventRecord(evStart, g_stream);
 
@@ -109,6 +171,9 @@ static GstFlowReturn on_new_sample(GstAppSink* appsink, gpointer)
 	buffer = gst_sample_get_buffer(sample);
 	if (!buffer)
 		goto cleanup;
+
+	capture_pts = GST_BUFFER_PTS(buffer);
+	capture_duration = GST_BUFFER_DURATION(buffer);
 
 	if (!gst_buffer_map(buffer, &map, GST_MAP_READ))
 		goto cleanup;
@@ -168,8 +233,24 @@ static GstFlowReturn on_new_sample(GstAppSink* appsink, gpointer)
 			cudaEventSynchronize(evStop);
 			cudaEventElapsedTime(&ms, evStart, evStop);
 		}
+
+		GstClockTime processed_pts = GST_CLOCK_TIME_NONE;
+
         if (ce == cudaSuccess)
-            push_processed_rgba_to_appsrc(g_host_rgba.data(), g_host_rgba.size(), 30);
+		{
+            bool pushed = push_processed_rgba_to_appsrc(g_host_rgba.data(), g_host_rgba.size(), capture_pts, capture_duration, 30, &processed_pts);
+			if (pushed && g_trigger_record)
+			{
+				g_trigger_record = false;
+
+				const uint64_t event_number = g_event_sequence.load();
+
+				const std::string output = "/mnt/persistent/event/event_" + std::to_string(event_number) + ".mkv";
+
+				printf("RECORD EVENT\n");
+				trigger_event_recording(processed_pts, output);
+			}
+		}
     }
 
 cleanup:
@@ -201,6 +282,8 @@ int main(int argc, char** argv)
     gst_init(&argc, &argv);
     gtk_init(&argc, &argv);
 
+	g_mkdir_with_parents("/dev/shm/processed_ring", 0755);
+
     g_pipeline_capture = build_pipeline_capture(g_w, g_h);
     if (!g_pipeline_capture)
         return 1;
@@ -211,6 +294,12 @@ int main(int argc, char** argv)
         gst_object_unref(g_pipeline_capture);
         return 2;
     }
+
+	GstBus *bus = gst_element_get_bus(g_pipeline_proc);
+
+	gst_bus_add_watch(bus, on_proc_bus_message, nullptr);
+
+	gst_object_unref(bus);
 
     GstElement* raw_sink = gst_bin_get_by_name(GST_BIN(g_pipeline_capture), "raw_sink");
     GstElement* proc_sink = gst_bin_get_by_name(GST_BIN(g_pipeline_proc), "proc_sink");
