@@ -4,7 +4,7 @@
 GstElement* build_pipeline_capture(int width, int height)
 {
 	std::string pipe =
-		"nvarguscamerasrc ! " 
+		"nvarguscamerasrc name=camera_source ! " 
 		"video/x-raw(memory:NVMM),width=" + std::to_string(width) + ",height=" + std::to_string(height) + ",framerate=30/1,format=NV12 ! " 
 		"tee name=t " 
 		"t. ! queue ! nvvidconv ! gtksink name=raw_sink sync=false " 

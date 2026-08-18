@@ -1,11 +1,11 @@
 #pragma once
 
 #include <array>
-#include <utility>
-#include <vector>
-#include <npp.h>
-#include <string>
 #include <iostream>
+#include <string>
+#include <vector>
+
+#include <npp.h>
 
 typedef enum
 {
@@ -15,18 +15,19 @@ typedef enum
 	BUF_16s_C4,
 	BUF_32f_C1,
 	BUF_END,
-}	bufferType_t;
+} bufferType_t;
 
 typedef void* (*buff_malloc_fn)(int, int, Npp32s*);
 
 template<auto Fn>
-static void* malloc_wrap(int w, int h, Npp32s* step) {
-  return static_cast<void*>(Fn(w, h, step));
+static void* malloc_wrap(int w, int h, Npp32s* step)
+{
+	return static_cast<void*>(Fn(w, h, step));
 }
 
 #define BUF_TO_MALLOC(t) &malloc_wrap<nppiMalloc_##t>
 
-const std::array<buff_malloc_fn, BUF_END+1> bufTypeToMallocMapping =
+const std::array<buff_malloc_fn, BUF_END + 1> bufTypeToMallocMapping =
 {
 	BUF_TO_MALLOC(8u_C1),
 	BUF_TO_MALLOC(8u_C4),
@@ -40,29 +41,29 @@ typedef enum
 {
 	MEM_PUBLIC,
 	MEM_PRIVATE,
-}	memoryVisibility_t;
+} memoryVisibility_t;
 
 typedef enum
 {
 	STATUS_PUBLIC,
 	STATUS_PRIVATE
-}	bufferStatus_t;
+} bufferStatus_t;
 
 typedef struct
 {
-	const int nbOfBuffer;
+	int nbOfBuffer;
 	bufferType_t bufferType;
 	bufferStatus_t bufferStatus;
-}	bufferRequest;
+} bufferRequest;
 
 typedef struct
 {
 	bufferType_t type;
 	bufferStatus_t status;
-	bool taken;
-	std::vector<void *> buffers;
+	std::vector<bool> taken;
+	std::vector<void*> buffers;
 	std::vector<Npp32s> steps;
-}	buffers_t;
+} buffers_t;
 
 #define CASE_T_TO_STR(t) case t: return std::string(#t)
 
@@ -75,11 +76,9 @@ static std::string bufferTypeToString(bufferType_t t)
 		CASE_T_TO_STR(BUF_16s_C1);
 		CASE_T_TO_STR(BUF_16s_C4);
 		CASE_T_TO_STR(BUF_32f_C1);
-		case BUF_END: 
-		{
+		case BUF_END:
 			std::cerr << "BUF_END Should never be used for a buffer\n";
 			return std::string("BUF_END");
-		}
 	}
 	__builtin_unreachable();
 }
@@ -94,18 +93,10 @@ static std::string memoryVisibilityToString(memoryVisibility_t t)
 	__builtin_unreachable();
 }
 
-#define REQUEST(t, s, n) (bufferRequest){n, t, s}
+#define REQUEST(t, s, n) bufferRequest{n, t, s}
 
-const std::vector<bufferRequest> bufferAtInit =	
-{
-	REQUEST(BUF_8u_C4, STATUS_PRIVATE, 1),
-	REQUEST(BUF_8u_C1, STATUS_PUBLIC, 2),
-	REQUEST(BUF_16s_C1, STATUS_PUBLIC, 2),
-	REQUEST(BUF_16s_C4, STATUS_PUBLIC, 3),
-	REQUEST(BUF_32f_C1, STATUS_PUBLIC, 1),
-};
-
+std::vector<bufferRequest> mergeBufferRequests(const std::vector<std::vector<bufferRequest>>& requestSets);
+bool initBuffers(const std::vector<bufferRequest>& requests);
 int getBuffer(bufferType_t bufferType, memoryVisibility_t visibility, int buf_idx, void **dest, Npp32s *step);
-int initBuffers();
+void resize_buffer(void **buffer, Npp32s *step, int w, int h);
 void freeBuffers();
-bool initFilterBuffers();

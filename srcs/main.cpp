@@ -12,6 +12,7 @@
 
 #include "driver_types.h"
 #include "gst/gstclock.h"
+#include "gst/gstobject.h"
 #include "gst/gstpad.h"
 #include "nppdefs.h"
 #include "nvbufsurface.h"
@@ -131,8 +132,6 @@ static GstFlowReturn on_new_sample(GstAppSink* appsink, gpointer)
 		cudaEventCreate(&evStop);
 	}
 
-	static bool init = false;
-
     GstSample* sample = nullptr;
     GstBuffer* buffer = nullptr;
     GstMapInfo map;
@@ -188,14 +187,6 @@ static GstFlowReturn on_new_sample(GstAppSink* appsink, gpointer)
 	cudaFree(0);
 	nppSetStream(g_stream);
 
-	if (!init)
-	{
-		nppGetStreamContext(&g_nppStreamCtx);
-
-		g_host_rgba.resize((size_t)g_w * (size_t)g_h * 4);
-		init = true;
-	}
-
 	if (NvBufSurfaceMapEglImage(surf, 0) != 0)
 		goto cleanup;
 
@@ -222,7 +213,10 @@ static GstFlowReturn on_new_sample(GstAppSink* appsink, gpointer)
     d_in = (Npp8u*)pp.ptr;
     step = (int)pp.pitch;
 
-	current_processing_function(d_in, step, false);
+	if (!g_current_filter)
+		goto cleanup;
+
+	g_current_filter->process(d_in, step);
 	nppiMirror_8u_C4IR_Ctx(g_rgba_out, g_rgba_outStep, (NppiSize){g_w, g_h}, NPP_BOTH_AXIS, g_nppStreamCtx);
 	{
         size_t rowBytes = (size_t)g_w * 4;
@@ -267,17 +261,57 @@ cleanup:
 
 int main(int argc, char** argv)
 {
-	initBuffers();
-	bool ret = initFilterBuffers();
-	ret |= getBuffer(BUF_8u_C4, MEM_PRIVATE, 0, (void **)&g_rgba_out, &g_rgba_outStep);
-	if (ret)
+	if (cudaSetDevice(0) != cudaSuccess || cudaFree(0) != cudaSuccess)
+	{
+		std::cerr << "Failed to initialize CUDA\n";
+		return 1;
+	}
+
+	nppSetStream(g_stream);
+	if (nppGetStreamContext(&g_nppStreamCtx) != NPP_SUCCESS)
+	{
+		std::cerr << "Failed to initialize NPP stream context\n";
+		return 1;
+	}
+
+	g_processing_filters = createProcessingFilters();
+	if (g_processing_filters.empty())
+	{
+		std::cerr << "No processing filters registered\n";
+		return 1;
+	}
+
+	std::vector<std::vector<bufferRequest>> requestSets;
+	requestSets.reserve(g_processing_filters.size() + 1);
+
+	// The processed RGBA output is pipeline-owned persistent memory, not a
+	// filter scratch buffer, so it participates as its own private request set.
+	requestSets.push_back({REQUEST(BUF_8u_C4, STATUS_PRIVATE, 1)});
+	for (auto& filter : g_processing_filters)
+		requestSets.push_back(filter->getRequestedBuffers());
+
+	const std::vector<bufferRequest> mergedRequests = mergeBufferRequests(requestSets);
+	if (!initBuffers(mergedRequests))
+	{
+		std::cerr << "Error while allocating merged NPP buffer pool, abort\n";
+		return 1;
+	}
+
+	if (getBuffer(BUF_8u_C4, MEM_PRIVATE, 0, reinterpret_cast<void**>(&g_rgba_out), &g_rgba_outStep) != 0 ||
+		!initFilters(g_processing_filters))
 	{
 		freeBuffers();
 		for (auto &buf : g_cuda_buf_to_free)
 			cudaFree(buf);
-		std::cerr << "Error while buffer allocation, abbort\n";
+		g_cuda_buf_to_free.clear();
+		std::cerr << "Error while initializing filters, abort\n";
 		return 1;
 	}
+
+	g_current_filter_index = 0;
+	g_current_filter = g_processing_filters[0].get();
+	g_current_filter->activate();
+	g_host_rgba.resize(static_cast<size_t>(g_w) * static_cast<size_t>(g_h) * 4);
 
     gst_init(&argc, &argv);
     gtk_init(&argc, &argv);
@@ -294,6 +328,14 @@ int main(int argc, char** argv)
         gst_object_unref(g_pipeline_capture);
         return 2;
     }
+
+	g_camera_source = gst_bin_get_by_name(GST_BIN(g_pipeline_capture), "camera_source");
+	if (!g_camera_source)
+	{
+		gst_object_unref(g_pipeline_capture);
+		gst_object_unref(g_pipeline_proc);
+		return 3;
+	}
 
 	GstBus *bus = gst_element_get_bus(g_pipeline_proc);
 
@@ -314,7 +356,8 @@ int main(int argc, char** argv)
         if (proc_appsink) gst_object_unref(proc_appsink);
         gst_object_unref(g_pipeline_proc);
         gst_object_unref(g_pipeline_capture);
-        return 3;
+		gst_object_unref(g_camera_source);
+        return 4;
     }
 
     GtkWidget* raw_widget = nullptr;
@@ -331,7 +374,8 @@ int main(int argc, char** argv)
         gst_object_unref(proc_appsink);
         gst_object_unref(g_pipeline_proc);
         gst_object_unref(g_pipeline_capture);
-        return 4;
+		gst_object_unref(g_camera_source);
+        return 5;
     }
 
     g_proc_src = GST_APP_SRC(proc_appsrc);
@@ -380,13 +424,22 @@ int main(int argc, char** argv)
 
     gst_object_unref(g_pipeline_capture);
     gst_object_unref(g_pipeline_proc);
+	gst_object_unref(g_camera_source);
 
 	g_object_unref(raw_widget);
 	g_object_unref(proc_widget);
 
+	if (g_current_filter)
+	{
+		g_current_filter->deactivate();
+		g_current_filter = nullptr;
+	}
+	g_processing_filters.clear();
+
 	freeBuffers();
 	for (auto &buf : g_cuda_buf_to_free)
 		cudaFree(buf);
+	g_cuda_buf_to_free.clear();
 
     return 0;
 }
