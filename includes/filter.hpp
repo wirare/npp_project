@@ -222,7 +222,6 @@ class HandScanning : public AFilter
 	private:
 		bool handleBackgroundState(Npp8u *in, Npp32s inStep, NppiSize roi);
 		bool generateForegroundMask(Npp8u *in, Npp32s inStep);
-		bool closeForegroundMask(Npp8u *in, Npp32s inStep);
 		bool labelComponents(NppiSize roi, int &maxLabelId);
 
 		bool ensureComponentStatsCapacity(size_t requiredStatsCount);
