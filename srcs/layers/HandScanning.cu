@@ -358,6 +358,10 @@ bool HandScanning::generateForegroundMask(Npp8u *in, Npp32s inStep)
 	return true;
 }
 
+bool HandScanning::closeForegroundMask(Npp8u *in, Npp32s inStep)
+{
+
+}
 
 bool HandScanning::labelComponents(NppiSize roi, int &maxLabelId)
 {
